@@ -6,6 +6,7 @@
     <title>The Intern Study Hub Ultimate Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+    
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js";
         import { getDatabase, ref, get, set } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-database.js";
@@ -287,15 +288,15 @@
         ];
 
         let viewDate = new Date();
-        let startDateStr = localStorage.getItem('intern_start_date') || getLocalDateStr();
-        let completedTasks = JSON.parse(localStorage.getItem('intern_completed')) || [];
-        let categories = JSON.parse(localStorage.getItem('intern_categories')) || ['영화 대본'];
-        let sentenceVault = JSON.parse(localStorage.getItem('intern_vault')) || [];
         
-        let userMasteryTarget = parseInt(localStorage.getItem('intern_mastery_target')) || 3;
-        let userSessionSize = parseInt(localStorage.getItem('intern_session_size')) || 30;
-        
-        const FIREBASE_STATE_PATH = 'internStudy/defaultState';
+        // 개인화 변수들 (로컬 스토리지가 아닌 메모리에서 관리)
+        let currentUserUid = null;
+        let startDateStr = getLocalDateStr();
+        let completedTasks = [];
+        let categories = ['영화 대본'];
+        let sentenceVault = [];
+        let userMasteryTarget = 3;
+        let userSessionSize = 30;
 
         function migrateVaultData(vault = []) {
             return vault.map(s => {
@@ -306,38 +307,39 @@
             });
         }
 
-        sentenceVault = migrateVaultData(sentenceVault);
-
-        function persistLocalState() {
-            localStorage.setItem('intern_vault', JSON.stringify(sentenceVault));
-            localStorage.setItem('intern_start_date', startDateStr);
-            localStorage.setItem('intern_completed', JSON.stringify(completedTasks));
-            localStorage.setItem('intern_categories', JSON.stringify(categories));
-            localStorage.setItem('intern_mastery_target', userMasteryTarget);
-            localStorage.setItem('intern_session_size', userSessionSize);
-        }
-
-        async function persistRemoteState() {
-            if (!window.firebaseClient || !window.firebaseClient.auth.currentUser) return;
+        async function persistState() {
+            if (!window.firebaseClient || !currentUserUid) return;
+            // 개별 유저 UID를 포함한 고유 경로 설정
+            const path = `internStudy/users/${currentUserUid}/state`;
             try {
-                const payload = { startDateStr, completedTasks, categories, sentenceVault };
-                await window.firebaseClient.set(window.firebaseClient.ref(window.firebaseClient.db, FIREBASE_STATE_PATH), payload);
+                const payload = { startDateStr, completedTasks, categories, sentenceVault, userMasteryTarget, userSessionSize };
+                await window.firebaseClient.set(window.firebaseClient.ref(window.firebaseClient.db, path), payload);
             } catch (error) { console.error('Firebase save failed:', error); }
         }
 
-        async function persistState() { persistLocalState(); await persistRemoteState(); }
-
         async function loadStateFromFirebase() {
-            if (!window.firebaseClient || !window.firebaseClient.auth.currentUser) return;
+            if (!window.firebaseClient || !currentUserUid) return;
+            // 개별 유저 UID를 포함한 고유 경로에서 데이터 로드
+            const path = `internStudy/users/${currentUserUid}/state`;
             try {
-                const snapshot = await window.firebaseClient.get(window.firebaseClient.ref(window.firebaseClient.db, FIREBASE_STATE_PATH));
-                if (!snapshot.exists()) return;
-                const data = snapshot.val() || {};
-                startDateStr = data.startDateStr || startDateStr;
-                completedTasks = Array.isArray(data.completedTasks) ? data.completedTasks : [];
-                categories = Array.isArray(data.categories) && data.categories.length ? data.categories : ['영화 대본'];
-                sentenceVault = migrateVaultData(Array.isArray(data.sentenceVault) ? data.sentenceVault : []);
-                persistLocalState();
+                const snapshot = await window.firebaseClient.get(window.firebaseClient.ref(window.firebaseClient.db, path));
+                if (snapshot.exists()) {
+                    const data = snapshot.val() || {};
+                    startDateStr = data.startDateStr || getLocalDateStr();
+                    completedTasks = Array.isArray(data.completedTasks) ? data.completedTasks : [];
+                    categories = Array.isArray(data.categories) && data.categories.length ? data.categories : ['영화 대본'];
+                    sentenceVault = migrateVaultData(Array.isArray(data.sentenceVault) ? data.sentenceVault : []);
+                    userMasteryTarget = data.userMasteryTarget || 3;
+                    userSessionSize = data.userSessionSize || 30;
+                } else {
+                    // 데이터가 없는 신규 유저 초기값 세팅
+                    startDateStr = getLocalDateStr();
+                    completedTasks = [];
+                    categories = ['영화 대본'];
+                    sentenceVault = [];
+                    userMasteryTarget = 3;
+                    userSessionSize = 30;
+                }
             } catch (error) { console.error('Firebase load failed:', error); }
         }
 
@@ -574,8 +576,6 @@
             const url = window.URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `Intern_Sentence_Vault_${getLocalDateStr()}.xlsx`; a.click(); window.URL.revokeObjectURL(url);
         }
 
-        // --- Smart Quiz Logic ---
-
         function shuffleArray(array) {
             let currentIndex = array.length, randomIndex;
             while (currentIndex !== 0) {
@@ -730,7 +730,6 @@
                 </div>`;
         }
 
-        function changeMonth(off) { viewDate.setMonth(viewDate.getMonth() + off); renderAll(); }
         async function initializeData() {
             if(confirm('진도 데이터만 초기화합니다. (문장 저장소는 유지됩니다)')) {
                 startDateStr = getLocalDateStr(); completedTasks = []; activeQuote = null; completedDateForQuote = null;
@@ -746,7 +745,9 @@
 
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
-                    // 로그인 상태: 환영 메시지, 로그아웃 버튼, 메인 콘텐츠 표시
+                    // 유저 UID를 글로벌 변수에 저장 (이걸 기반으로 DB가 나뉨)
+                    currentUserUid = user.uid;
+
                     document.getElementById('login-btn').classList.add('hidden');
                     document.getElementById('logged-out-view').classList.add('hidden');
                     
@@ -764,12 +765,17 @@
                         });
                     };
 
-                    persistLocalState(); 
+                    // 로그인 한 유저만의 데이터를 로드하고 화면에 그리기
                     await loadStateFromFirebase();
                     renderCategories();
                     renderAll();
+                    
+                    // 현재 활성화된 탭이 저장소 탭이면, 목록 새로 그리기
+                    if(document.getElementById('tab-vault').classList.contains('active')) {
+                        renderVault();
+                    }
                 } else {
-                    // 비로그인 상태: 로그인 버튼, 안내 화면 표시
+                    currentUserUid = null;
                     document.getElementById('logout-btn').classList.add('hidden');
                     document.getElementById('user-greeting').classList.add('hidden');
                     document.getElementById('main-content').classList.add('hidden');
