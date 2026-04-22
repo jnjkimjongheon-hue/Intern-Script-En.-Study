@@ -289,7 +289,7 @@
 
         let viewDate = new Date();
         
-        // 개인화 변수들 (로컬 스토리지가 아닌 메모리에서 관리)
+        // 개인화 변수들
         let currentUserUid = null;
         let startDateStr = getLocalDateStr();
         let completedTasks = [];
@@ -309,7 +309,6 @@
 
         async function persistState() {
             if (!window.firebaseClient || !currentUserUid) return;
-            // 개별 유저 UID를 포함한 고유 경로 설정
             const path = `internStudy/users/${currentUserUid}/state`;
             try {
                 const payload = { startDateStr, completedTasks, categories, sentenceVault, userMasteryTarget, userSessionSize };
@@ -319,7 +318,6 @@
 
         async function loadStateFromFirebase() {
             if (!window.firebaseClient || !currentUserUid) return;
-            // 개별 유저 UID를 포함한 고유 경로에서 데이터 로드
             const path = `internStudy/users/${currentUserUid}/state`;
             try {
                 const snapshot = await window.firebaseClient.get(window.firebaseClient.ref(window.firebaseClient.db, path));
@@ -332,7 +330,6 @@
                     userMasteryTarget = data.userMasteryTarget || 3;
                     userSessionSize = data.userSessionSize || 30;
                 } else {
-                    // 데이터가 없는 신규 유저 초기값 세팅
                     startDateStr = getLocalDateStr();
                     completedTasks = [];
                     categories = ['영화 대본'];
@@ -424,6 +421,11 @@
                 activeQuote = quotes[Math.floor(Math.random() * quotes.length)]; completedDateForQuote = dateStr;
             } else if (!isCompleting && dateStr === completedDateForQuote) { activeQuote = null; completedDateForQuote = null; }
             renderAll();
+        }
+
+        function changeMonth(delta) {
+            viewDate.setMonth(viewDate.getMonth() + delta);
+            renderCalendar(getChunks(), getLocalDateStr());
         }
 
         function renderAll() {
@@ -688,6 +690,20 @@
             }
         }
 
+        // 현재 퀴즈 카드의 단어 기록 초기화 기능
+        function resetCurrentWord() {
+            const item = activeQuizList[currentQuizIndex];
+            if(confirm(`"${item.meaning}" 단어의 누적 암기 기록을 초기화하시겠습니까?`)) {
+                const idx = sentenceVault.findIndex(s => s.id === item.id);
+                if (idx > -1) {
+                    sentenceVault[idx].memorizeCount = 0;
+                    item.memorizeCount = 0; 
+                    persistState();
+                    renderQuizCard(); 
+                }
+            }
+        }
+
         function renderQuizCard() {
             const container = document.getElementById('quiz-container');
             const s = activeQuizList[currentQuizIndex];
@@ -703,8 +719,16 @@
                     <div id="flashcard-inner" class="w-full h-full transition-transform duration-500 transform-style-preserve-3d">
                         
                         <div class="absolute w-full h-full backface-hidden bg-white rounded-3xl shadow-xl flex flex-col justify-center items-center p-8 border border-slate-200 group-hover:shadow-2xl transition-shadow">
-                            <span class="absolute top-8 px-3 py-1 bg-slate-100 text-slate-500 text-[10px] font-black rounded border tracking-wider">${s.tag}</span>
+                            
+                            <div class="absolute top-8 w-full px-8 flex justify-between items-center z-20">
+                                <span class="px-3 py-1 bg-slate-100 text-slate-500 text-[10px] font-black rounded border tracking-wider">${s.tag}</span>
+                                <button onclick="event.stopPropagation(); resetCurrentWord()" class="text-[10px] font-bold text-slate-400 hover:text-red-500 bg-slate-50 hover:bg-red-50 border border-slate-200 px-2 py-1 rounded transition-colors" title="현재 단어 진행도 초기화">
+                                    🔄 초기화
+                                </button>
+                            </div>
+
                             <h3 class="text-2xl font-black text-center text-slate-800 leading-snug break-keep">${s.meaning}</h3>
+                            
                             <div class="absolute bottom-8 flex flex-col items-center gap-2">
                                 <span class="flex gap-1.5 mb-2">${streakDots}</span>
                                 <p class="text-[10px] text-brand font-bold bg-brand/10 px-3 py-1 rounded-full animate-pulse">탭하여 원문 확인</p>
@@ -712,8 +736,15 @@
                         </div>
                         
                         <div class="absolute w-full h-full backface-hidden rotate-y-180 bg-brand-dark rounded-3xl shadow-2xl flex flex-col p-6 text-white border border-brand">
-                            <div class="flex-1 flex flex-col justify-center items-center text-center">
-                                <h3 class="text-2xl sm:text-3xl font-black italic mb-6 leading-tight text-white">"${s.original}"</h3>
+                            <div class="flex-1 flex flex-col justify-center items-center text-center relative">
+                                
+                                <div class="absolute top-0 w-full flex justify-end z-20">
+                                    <button onclick="event.stopPropagation(); resetCurrentWord()" class="text-[10px] font-bold text-brand-light hover:text-red-300 bg-white/10 hover:bg-white/20 border border-white/20 px-2 py-1 rounded transition-colors" title="현재 단어 진행도 초기화">
+                                        🔄 초기화
+                                    </button>
+                                </div>
+                                
+                                <h3 class="text-2xl sm:text-3xl font-black italic mb-6 leading-tight text-white mt-6">"${s.original}"</h3>
                                 ${s.applied ? `<div class="w-full p-4 bg-white/10 rounded-2xl text-left border border-white/10"><div class="text-[9px] text-brand-light mb-1 font-black uppercase tracking-widest">Business Case</div><div class="text-sm font-semibold">${s.applied}</div></div>` : ''}
                             </div>
                             
@@ -745,7 +776,6 @@
 
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
-                    // 유저 UID를 글로벌 변수에 저장 (이걸 기반으로 DB가 나뉨)
                     currentUserUid = user.uid;
 
                     document.getElementById('login-btn').classList.add('hidden');
@@ -765,12 +795,10 @@
                         });
                     };
 
-                    // 로그인 한 유저만의 데이터를 로드하고 화면에 그리기
                     await loadStateFromFirebase();
                     renderCategories();
                     renderAll();
                     
-                    // 현재 활성화된 탭이 저장소 탭이면, 목록 새로 그리기
                     if(document.getElementById('tab-vault').classList.contains('active')) {
                         renderVault();
                     }
