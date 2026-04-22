@@ -8,6 +8,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js";
+        import { getDatabase, ref, get, set } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-database.js";
         // TODO: Add SDKs for Firebase products that you want to use
         // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -24,6 +25,8 @@
 
         // Initialize Firebase
         const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        window.firebaseClient = { db, ref, get, set };
     </script>
     
     <script>
@@ -223,19 +226,72 @@
         let viewDate = new Date();
         let startDateStr = localStorage.getItem('intern_start_date') || getLocalDateStr();
         let completedTasks = JSON.parse(localStorage.getItem('intern_completed')) || [];
-        
         let categories = JSON.parse(localStorage.getItem('intern_categories')) || ['영화 대본'];
-        
         let sentenceVault = JSON.parse(localStorage.getItem('intern_vault')) || [];
+        const FIREBASE_STATE_PATH = 'internStudy/defaultState';
+
+        function migrateVaultData(vault = []) {
+            return vault.map(s => {
+                if (s.memorized === true) return { ...s, memorizeCount: 3, memorized: undefined };
+                if (s.memorized === false) return { ...s, memorizeCount: 0, memorized: undefined };
+                if (typeof s.memorizeCount !== 'number') return { ...s, memorizeCount: 0 };
+                return s;
+            });
+        }
+
         // 하위 호환성 (기존 데이터 마이그레이션)
-        sentenceVault = sentenceVault.map(s => {
-            if (s.memorized === true) return { ...s, memorizeCount: 3, memorized: undefined };
-            if (s.memorized === false) return { ...s, memorizeCount: 0, memorized: undefined };
-            if (typeof s.memorizeCount !== 'number') return { ...s, memorizeCount: 0 };
-            return s;
-        });
-        localStorage.setItem('intern_vault', JSON.stringify(sentenceVault));
-        localStorage.setItem('intern_start_date', startDateStr);
+        sentenceVault = migrateVaultData(sentenceVault);
+
+        function persistLocalState() {
+            localStorage.setItem('intern_vault', JSON.stringify(sentenceVault));
+            localStorage.setItem('intern_start_date', startDateStr);
+            localStorage.setItem('intern_completed', JSON.stringify(completedTasks));
+            localStorage.setItem('intern_categories', JSON.stringify(categories));
+        }
+
+        async function persistRemoteState() {
+            if (!window.firebaseClient) return;
+            try {
+                const payload = {
+                    startDateStr,
+                    completedTasks,
+                    categories,
+                    sentenceVault
+                };
+                await window.firebaseClient.set(
+                    window.firebaseClient.ref(window.firebaseClient.db, FIREBASE_STATE_PATH),
+                    payload
+                );
+            } catch (error) {
+                console.error('Firebase save failed:', error);
+            }
+        }
+
+        async function persistState() {
+            persistLocalState();
+            await persistRemoteState();
+        }
+
+        async function loadStateFromFirebase() {
+            if (!window.firebaseClient) return;
+            try {
+                const snapshot = await window.firebaseClient.get(
+                    window.firebaseClient.ref(window.firebaseClient.db, FIREBASE_STATE_PATH)
+                );
+                if (!snapshot.exists()) return;
+
+                const data = snapshot.val() || {};
+                startDateStr = data.startDateStr || startDateStr;
+                completedTasks = Array.isArray(data.completedTasks) ? data.completedTasks : [];
+                categories = Array.isArray(data.categories) && data.categories.length ? data.categories : ['영화 대본'];
+                sentenceVault = migrateVaultData(Array.isArray(data.sentenceVault) ? data.sentenceVault : []);
+                persistLocalState();
+            } catch (error) {
+                console.error('Firebase load failed:', error);
+            }
+        }
+
+        persistLocalState();
 
         // 명언 상태 관리 변수
         let activeQuote = null;
@@ -273,7 +329,7 @@
             if (newCat && newCat.trim() !== '') {
                 if(!categories.includes(newCat.trim())) {
                     categories.push(newCat.trim());
-                    localStorage.setItem('intern_categories', JSON.stringify(categories));
+                    persistState();
                     renderCategories();
                     document.getElementById('sentence-tag').value = newCat.trim();
                 } else {
@@ -286,7 +342,7 @@
             if(categories.length <= 1) return alert("최소 1개의 카테고리는 유지해야 합니다.");
             if(confirm(`'${current}' 카테고리를 목록에서 삭제하시겠습니까?\n(기존에 저장된 문장들의 태그는 유지됩니다)`)) {
                 categories = categories.filter(c => c !== current);
-                localStorage.setItem('intern_categories', JSON.stringify(categories));
+                persistState();
                 renderCategories();
             }
         }
@@ -334,7 +390,7 @@
             if (isCompleting) completedTasks.push(id);
             else completedTasks.splice(idx, 1);
             
-            localStorage.setItem('intern_completed', JSON.stringify(completedTasks));
+            persistState();
 
             // 클릭한 항목의 날짜 파악하여 해당 날짜 100% 완료 여부 확인
             const dateStr = id.split('_')[0];
@@ -511,7 +567,7 @@
             } else {
                 sentenceVault.unshift({ id: Date.now(), original, meaning, applied, tag, memorizeCount: 0 });
             }
-            localStorage.setItem('intern_vault', JSON.stringify(sentenceVault));
+            persistState();
             resetVaultForm();
             renderVault();
         }
@@ -532,7 +588,7 @@
         function deleteSentence(id) {
             if(confirm("삭제하시겠습니까?")) {
                 sentenceVault = sentenceVault.filter(s => s.id !== id);
-                localStorage.setItem('intern_vault', JSON.stringify(sentenceVault));
+                persistState();
                 renderVault();
             }
         }
@@ -656,7 +712,7 @@
                 }
             }
             
-            localStorage.setItem('intern_vault', JSON.stringify(sentenceVault)); 
+            persistState(); 
             
             currentQuizIndex++;
             if(currentQuizIndex >= activeQuizList.length) currentQuizIndex = 0;
@@ -669,7 +725,7 @@
         function resetMemorized() {
             if(confirm("모든 문장의 암기 누적 횟수를 0으로 초기화하시겠습니까?")) {
                 sentenceVault.forEach(s => s.memorizeCount = 0);
-                localStorage.setItem('intern_vault', JSON.stringify(sentenceVault));
+                persistState();
                 initializeQuiz();
             }
         }
@@ -720,9 +776,19 @@
         }
 
         function changeMonth(off) { viewDate.setMonth(viewDate.getMonth() + off); renderAll(); }
-        function initializeData() { if(confirm('진도 데이터만 초기화합니다. (문장 저장소는 유지됩니다)')) { localStorage.removeItem('intern_start_date'); localStorage.removeItem('intern_completed'); location.reload(); } }
+        async function initializeData() {
+            if(confirm('진도 데이터만 초기화합니다. (문장 저장소는 유지됩니다)')) {
+                startDateStr = getLocalDateStr();
+                completedTasks = [];
+                activeQuote = null;
+                completedDateForQuote = null;
+                await persistState();
+                renderAll();
+            }
+        }
         
-        window.onload = () => {
+        window.onload = async () => {
+            await loadStateFromFirebase();
             renderCategories();
             renderAll();
         };
